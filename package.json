@@ -1,0 +1,54 @@
+{
+  "name": "node-bde",
+  "version": "1.0.0",
+  "description": "An awesome API REST to handle a BDE shop",
+  "main": "app.js",
+  "scripts": {
+    "start": "nodemon server.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Schilt-Erwan/Projet-Web.git"
+  },
+  "author": "Stephane Nguene",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/Schilt-Erwan/Projet-Web/issues"
+  },
+  "homepage": "https://github.com/Schilt-Erwan/Projet-Web#readme",
+  "dependencies": {
+    "actions-on-google": "^3.0.0",
+    "bcrypt": "^5.1.1",
+    "bcryptjs": "^2.4.3",
+    "body-parser": "^1.20.2",
+    "cheerio": "^1.0.0",
+    "cookie-parser": "^1.4.6",
+    "cors": "^2.8.5",
+    "dialogflow": "^1.2.0",
+    "dotenv": "^16.4.5",
+    "ejs": "^3.1.10",
+    "express": "^4.18.3",
+    "express-fileupload": "^1.5.1",
+    "flatted": "^3.3.1",
+    "geolib": "^3.3.4",
+    "geopoint": "^1.0.1",
+    "google": "^2.1.0",
+    "jsonwebtoken": "^9.0.2",
+    "moment": "^2.30.1",
+    "mongoose": "^8.7.0",
+    "multer": "^1.4.5-lts.1",
+    "mysql": "^2.18.1",
+    "nodemailer": "^6.9.15",
+    "on": "^1.3.0",
+    "request": "^2.88.2",
+    "serve-favicon": "^2.5.0",
+    "sqlstring": "^2.3.3",
+    "stripe": "^16.12.0",
+    "superagent": "^10.1.0",
+    "uuid": "^10.0.0"
+  },
+  "devDependencies": {
+    "morgan": "^1.10.0",
+    "nodemon": "^3.1.0"
+  }
+}
