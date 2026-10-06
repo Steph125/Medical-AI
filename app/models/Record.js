@@ -35,9 +35,7 @@ var Record = new Schema({
         prescripton: { type: Array },
         allergie: { type: Array },
         medication: { type: Array },
-
-
-    })
+    }, { timestamps: true })
     // module.exports = mongoose.model("Record", Record);
 module.exports = mongoose.model("Record", Record)
 

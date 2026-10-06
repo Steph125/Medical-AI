@@ -1,185 +1,108 @@
+const express = require('express');
+const bcrypt = require('bcryptjs');
 
-let mongoose = require('mongoose'),
-    express = require('express'),
-    multer = require('multer'),
-    router = express.Router();
-var jwt = require("jsonwebtoken");
-const config = require("../config/auth.config");
+const userSchema = require('../models/user.model');
+const { verifyToken, isAdmin, isSelfOr, hasRole } = require('../middlewares/authJwt');
+const { upload, requireFile, publicUrl } = require('../middlewares/upload');
+const { HttpError, asyncHandler, pick } = require('../utils/http');
+const { verifyResetToken } = require('../utils/auth');
 
-const { v4: uuidv4 } = require('uuid');
-uuidv4();
-//  User Model
-let userSchema = require('../models/user.model');
-const DIR = './public/';
+const router = express.Router();
 
-const storage = multer.diskStorage({
-    destination: (req, file, cb) => {
-        cb(null, DIR);
-    },
-    filename: (req, file, cb) => {
-        const fileName = file.originalname.toLowerCase().split(' ').join('-');
-        cb(null, uuidv4() + '-' + fileName)
-    }
-});
+// Champs qu'un utilisateur peut modifier sur son propre profil.
+const PROFILE_FIELDS = [
+    'username', 'firstname', 'lastname', 'birthdate', 'gender', 'phone',
+    'country', 'stat', 'street', 'zip', 'picture', 'speciality', 'location',
+];
+// Champs supplémentaires réservés à l'administrateur.
+const ADMIN_FIELDS = [
+    ...PROFILE_FIELDS, 'email', 'role', 'status', 'roles',
+    'paymentDate', 'paymentPlan', 'isPaid', 'isExpired',
+];
 
+const findUserOr404 = async (query) => {
+    const user = await query;
+    if (!user) throw new HttpError(404, 'User Not found.');
+    return user;
+};
 
-var upload = multer({
-    storage: storage,
-    fileFilter: (req, file, cb) => {
-        if (file.mimetype == "image/png" || file.mimetype == "image/jpg" || file.mimetype == "image/jpeg") {
-            cb(null, true);
-        } else {
-            cb(null, false);
-            return cb(new Error('Only .png, .jpg and .jpeg format allowed!'));
-        }
-    }
-});
+router.put('/user-profile/:id', verifyToken, isSelfOr('admin'), upload.single('profileImg'), requireFile,
+    asyncHandler(async (req, res) => {
+        const user = await findUserOr404(userSchema.findByIdAndUpdate(
+            req.params.id,
+            { $set: { picture: publicUrl(req, req.file) } },
+            { new: true }
+        ));
+        res.json(user);
+    }));
 
-router.put('/user-profile/:id', upload.single('profileImg'), (req, res, next) => {
-    const url = req.protocol + '://' + req.get('host')
-    userSchema.findByIdAndUpdate(req.params.id, {
-        $set: { picture: url + '/public/' + req.file.filename }
-    }, (error, data) => {
-        if (error) {
-            console.log(req.files);
-            return next(error);
-            console.log(error)
-        } else {
-            res.json(data)
-            console.log('Student updated successfully !')
-        }
-    })
-})
+// CREATE User (admin)
+router.post('/create-user', verifyToken, isAdmin, asyncHandler(async (req, res) => {
+    const data = pick(req.body, ADMIN_FIELDS);
+    if (req.body.password) data.password = bcrypt.hashSync(String(req.body.password), 8);
+    res.json(await userSchema.create(data));
+}));
 
-// CREATE User
-router.route('/create-user').post((req, res, next) => {
-    userSchema.create(req.body, (error, data) => {
-        if (error) {
-            return next(error)
-        } else {
-            console.log(data)
-            res.json(data)
-        }
-    })
-});
-// READ User
-router.route('/').get((req, res, next) => {
-    userSchema.find((error, data) => {
-        if (error) {
-            return next(error)
-        } else {
-            res.json(data)
-        }
-    })
-});
-// Get Single User ID
-router.route('/user/:id').get((req, res, next) => {
-    userSchema.findById(req.params.id, (error, data) => {
-        if (error) {
-            return next(error)
-        } else {
-            res.json(data)
-        }
-    })
-})
+// READ Users (admin)
+router.get('/', verifyToken, isAdmin, asyncHandler(async (req, res) => {
+    res.json(await userSchema.find());
+}));
 
-// Get Single User Email
-router.route('/resetPass/:confirmationCode').get((req, res, next) => {
-    userSchema.findOne({ confirmationCode: req.params.confirmationCode }, (error, data) => {
-        if (error) {
-            return next(error)
-        } else {
-            res.json(data)
-        }
-    })
-})
+// Get Single User ID : soi-même, un médecin (profil public), ou si on est médecin/admin
+router.get('/user/:id', verifyToken, asyncHandler(async (req, res) => {
+    const user = await findUserOr404(userSchema.findById(req.params.id));
+    const allowed = req.params.id === req.userId
+        || user.role === 'doctor'
+        || hasRole(req.user, 'doctor', 'admin');
+    if (!allowed) throw new HttpError(403, 'Access denied');
+    res.json(user);
+}));
 
-router.route('/singin/linkedin').post((req, res, next) => {
-    userSchema.findOne({ email: req.body.email, }).populate("roles", "-__v")
-        .exec((err, user) => {
-            if (!user) {
-                return res.status(404).send({ message: "User Not found." });
-            }
-            var token = jwt.sign({ id: user.id }, config.secret, {
-                expiresIn: 86400, // 24 hours
-            });
-            var authorities = [];
+// Vérifie un lien de réinitialisation et renvoie l'utilisateur concerné.
+// Le nouveau mot de passe s'envoie ensuite à POST /api/auth/reset-password.
+router.get('/resetPass/:token', asyncHandler(async (req, res) => {
+    const user = await verifyResetToken(userSchema, req.params.token);
+    if (!user) throw new HttpError(400, 'Invalid or expired reset link.');
+    res.json({ _id: user._id, username: user.username, email: user.email });
+}));
 
-            res.status(200).send({
-                id: user._id,
-                username: user.username,
-                email: user.email,
-                roles: authorities,
-                accessToken: token,
-                status: user.status,
-            });
-        })
-})
-
-
-
-// Update User
-router.route('/update-user/:id').put((req, res, next) => {
-    userSchema.findByIdAndUpdate(req.params.id, {
-        $set: req.body
-    }, (error, data) => {
-        if (error) {
-            return next(error);
-            console.log(error)
-        } else {
-            res.json(data)
-            console.log('Student updated successfully !')
-        }
-    })
-})
+// Update User : son propre profil, ou n'importe lequel pour l'admin
+router.put('/update-user/:id', verifyToken, isSelfOr('admin'), asyncHandler(async (req, res) => {
+    const fields = hasRole(req.user, 'admin') ? ADMIN_FIELDS : PROFILE_FIELDS;
+    const user = await findUserOr404(userSchema.findByIdAndUpdate(
+        req.params.id,
+        { $set: pick(req.body, fields) },
+        { new: true, runValidators: true }
+    ));
+    res.json(user);
+}));
 
 // Find user role by id
-router.route('/user-role/:id').get((req, res, next) => {
-    userSchema.findById(req.params.id, (error, data) => {
-        if (error) {
-            return next(error)
-        } else {
-            res.json(data.role)
-        }
-    })
-})
+router.get('/user-role/:id', verifyToken, asyncHandler(async (req, res) => {
+    const user = await findUserOr404(userSchema.findById(req.params.id));
+    res.json(user.role);
+}));
 
+// Find user role by username
+router.get('/usern-role/:username', verifyToken, asyncHandler(async (req, res) => {
+    const user = await findUserOr404(userSchema.findOne({ username: String(req.params.username) }));
+    res.json(user.role);
+}));
 
-// Find user role bu unsername
-router.route('/usern-role/:username').get((req, res, next) => {
-    userSchema.findOne({ username: req.params.username }, (error, data) => {
-        if (error) {
-            return next(error)
-        } else {
-            res.json(data.role)
-        }
-    })
-})
+// Delete User : son propre compte, ou n'importe lequel pour l'admin
+router.delete('/delete-user/:id', verifyToken, isSelfOr('admin'), asyncHandler(async (req, res) => {
+    const user = await findUserOr404(userSchema.findByIdAndDelete(req.params.id));
+    res.status(200).json({ msg: user });
+}));
 
-
-
-// Delete User
-router.route('/delete-user/:id').delete((req, res, next) => {
-    userSchema.findByIdAndRemove(req.params.id, (error, data) => {
-        if (error) {
-            return next(error);
-        } else {
-            res.status(200).json({
-                msg: data
-            })
-        }
-    })
-})
-
-
-router.route('/users-patients/:role').get((req, res, next) => {
-    userSchema.find({ role: req.params.role }, (error, data) => {
-        if (error) {
-            return next(error)
-        } else {
-            res.json(data)
-        }
-    })
-})
+// Liste par rôle : tout utilisateur connecté peut lister les médecins,
+// seuls les médecins et admins peuvent lister les patients.
+router.get('/users-patients/:role', verifyToken, asyncHandler(async (req, res) => {
+    const role = String(req.params.role);
+    if (role !== 'doctor' && !hasRole(req.user, 'doctor', 'admin')) {
+        throw new HttpError(403, 'Access denied');
+    }
+    res.json(await userSchema.find({ role }));
+}));
 
 module.exports = router;

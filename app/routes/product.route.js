@@ -1,66 +1,43 @@
+const express = require('express');
 
-let mongoose = require('mongoose'),
-    express = require('express'),
-    router = express.Router();
-// Product Model
-let productSchema = require('../models/product.model');
+const productSchema = require('../models/product.model');
+const { verifyToken, isAdmin } = require('../middlewares/authJwt');
+const { HttpError, asyncHandler, pick } = require('../utils/http');
 
-// CREATE User
-router.route('/create-product').post((req, res, next) => {
-    productSchema.create(req.body, (error, data) => {
-        if (error) {
-            return next(error)
-        } else {
-            console.log(data)
-            res.json(data)
-        }
-    })
-});
-// READ Users
-router.route('/').get((req, res, next) => {
-    productSchema.find((error, data) => {
-        if (error) {
-            return next(error)
-        } else {
-            res.json(data)
-        }
-    })
-});
-// Get Single User
-router.route('/edit-product/:id').get((req, res, next) => {
-    productSchema.findById(req.params.id, (error, data) => {
-        if (error) {
-            return next(error)
-        } else {
-            res.json(data)
-        }
-    })
-})
+const router = express.Router();
 
-// Update User
-router.route('/update-product/:id').put((req, res, next) => {
-        productSchema.findByIdAndUpdate(req.params.id, {
-            $set: req.body
-        }, (error, data) => {
-            if (error) {
-                return next(error);
-                console.log(error)
-            } else {
-                res.json(data)
-                console.log('Product updated successfully !')
-            }
-        })
-    })
-    // Delete Student
-router.route('/delete-product/:id').delete((req, res, next) => {
-    productSchema.findByIdAndRemove(req.params.id, (error, data) => {
-        if (error) {
-            return next(error);
-        } else {
-            res.status(200).json({
-                msg: data
-            })
-        }
-    })
-})
+const PRODUCT_FIELDS = ['name', 'description', 'price', 'countInStock', 'imageUrl'];
+
+// CREATE Product (admin)
+router.post('/create-product', verifyToken, isAdmin, asyncHandler(async (req, res) => {
+    res.json(await productSchema.create(pick(req.body, PRODUCT_FIELDS)));
+}));
+
+// READ Products
+router.get('/', asyncHandler(async (req, res) => {
+    res.json(await productSchema.find());
+}));
+
+// Get Single Product
+router.get('/edit-product/:id', asyncHandler(async (req, res) => {
+    res.json(await productSchema.findById(req.params.id));
+}));
+
+// Update Product (admin)
+router.put('/update-product/:id', verifyToken, isAdmin, asyncHandler(async (req, res) => {
+    const product = await productSchema.findByIdAndUpdate(
+        req.params.id,
+        { $set: pick(req.body, PRODUCT_FIELDS) },
+        { new: true, runValidators: true }
+    );
+    if (!product) throw new HttpError(404, 'Product not found');
+    res.json(product);
+}));
+
+// Delete Product (admin)
+router.delete('/delete-product/:id', verifyToken, isAdmin, asyncHandler(async (req, res) => {
+    const product = await productSchema.findByIdAndDelete(req.params.id);
+    res.status(200).json({ msg: product });
+}));
+
 module.exports = router;

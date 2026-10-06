@@ -13,7 +13,10 @@ var Appointement= new Schema(
         User : {
             type: mongoose.Schema.Types.ObjectId, 
             ref : "User" ,
-          },  
+          },
+        // Lien entre la copie du médecin et celle du patient
+        Doctor: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+        Patient: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
     }
 )
 

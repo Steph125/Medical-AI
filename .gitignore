@@ -1,0 +1,15 @@
+node_modules/
+.env
+.env.*
+!.env.example
+
+# Clés de comptes de service Google
+*service-account*.json
+app/Appointment_chatbot/server/
+
+# Fichiers uploadés par les utilisateurs (données personnelles)
+public/*
+!public/.gitkeep
+
+npm-debug.log*
+.DS_Store

@@ -1,219 +1,93 @@
-let mongoose = require('mongoose'),
-request = require('request'),
-cheerio = require('cheerio'),
-  express = require('express'),
-  multer = require('multer'),
-  router = express.Router();
-  const { v4: uuidv4 } = require('uuid');
-  uuidv4();
+const express = require('express');
 
-  //  Blog Model
-let blogSchema = require('../models/blog.model');
+const blogSchema = require('../models/blog.model');
+const { verifyToken, isDoctorOrAdmin, hasRole } = require('../middlewares/authJwt');
+const { upload, requireFile, publicUrl } = require('../middlewares/upload');
+const { HttpError, asyncHandler, pick, escapeRegex } = require('../utils/http');
+const webmd = require('../services/webmd');
 
+const router = express.Router();
 
-  const DIR = './public/';
+const BLOG_FIELDS = ['title', 'description', 'category'];
 
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-      cb(null, DIR);
-  },
-  filename: (req, file, cb) => {
-      const fileName = file.originalname.toLowerCase().split(' ').join('-');
-      cb(null, uuidv4() + '-' + fileName)
-  }
-});
+// Seuls les auteurs du blog (ou un admin) peuvent le modifier ou le supprimer.
+const findOwnBlog = async (req) => {
+  const blog = await blogSchema.findById(req.params.id);
+  if (!blog) throw new HttpError(404, 'Blog not found');
+  const isAuthor = blog.doctors.some((id) => id.equals(req.userId));
+  if (!isAuthor && !hasRole(req.user, 'admin')) throw new HttpError(403, 'Access denied');
+  return blog;
+};
 
-
-var upload = multer({
-  storage: storage,
-  fileFilter: (req, file, cb) => {
-      if (file.mimetype == "image/png" || file.mimetype == "image/jpg" || file.mimetype == "image/jpeg") {
-          cb(null, true);
-      } else {
-          cb(null, false);
-          return cb(new Error('Only .png, .jpg and .jpeg format allowed!'));
-      }
-  }
-});
-
-router.post('/create-blog', upload.single('profileImg'), (req, res, next) => {
-    const url = req.protocol + '://' + req.get('host')
-      const blog = new blogSchema({
-        _id: new mongoose.Types.ObjectId(),
-        title : req.body.title,
-        description : req.body.description,
-        doctors : req.body.doctors, 
-        category : req.body.category,       
-        picture : url + '/public/' + req.file.filename
+router.post('/create-blog', verifyToken, isDoctorOrAdmin, upload.single('profileImg'), requireFile,
+  asyncHandler(async (req, res) => {
+    const isAdmin = hasRole(req.user, 'admin');
+    await blogSchema.create({
+      ...pick(req.body, BLOG_FIELDS),
+      // L'auteur est le médecin connecté (un admin peut publier pour un autre médecin).
+      doctors: isAdmin && req.body.doctors ? req.body.doctors : [req.userId],
+      picture: publicUrl(req, req.file),
     });
-    blog.save().then(result => {
-      res.status(201).json({
-          message: "Blog registered successfully!",
-      })
-  }).catch(err => {
-      console.log(err),
-          res.status(500).json({
-              error: err
-          });
-  })
-})
-// READ Blog
-router.route('/').get((req, res, next) => {
-    blogSchema.find((error, data) => {
-    if (error) {
-      return next(error)
-    } else {
-      res.json(data)
-    }
-  })
-});
-// Get Single Blog
-router.route('/blog/:id').get((req, res, next) => {
-    blogSchema.findById(req.params.id, (error, data) => {
-    if (error) {
-      return next(error)
-    } else {
-      res.json(data)
-    }
-  })
-})
+    res.status(201).json({ message: "Blog registered successfully!" });
+  }));
 
+// READ Blog
+router.get('/', asyncHandler(async (req, res) => {
+  res.json(await blogSchema.find());
+}));
+
+// Get Single Blog
+router.get('/blog/:id', asyncHandler(async (req, res) => {
+  res.json(await blogSchema.findById(req.params.id));
+}));
 
 // Get Doctor Blogs
-router.route('/blog-doctor/:doctors').get((req, res, next) => {
-  blogSchema.find({doctors : req.params.doctors}, (error, data) => {
-  if (error) {
-    return next(error)
-  } else {
-    res.json(data)
-  }
-})
-})
+router.get('/blog-doctor/:doctors', asyncHandler(async (req, res) => {
+  res.json(await blogSchema.find({ doctors: req.params.doctors }));
+}));
 
 // Update Blog
-router.route('/update-blog/:id').put((req, res, next) => {
-    blogSchema.findByIdAndUpdate(req.params.id, {
-    $set: req.body
-  }, (error, data) => {
-    if (error) {
-      return next(error);
-      console.log(error)
-    } else {
-      res.json(data)
-      console.log('Student updated successfully !')
-    }
-  })
-})
+router.put('/update-blog/:id', verifyToken, asyncHandler(async (req, res) => {
+  await findOwnBlog(req);
+  const blog = await blogSchema.findByIdAndUpdate(req.params.id, { $set: pick(req.body, BLOG_FIELDS) }, { new: true });
+  res.json(blog);
+}));
+
+// Compteurs publics (remplacent la modification de views/likes via update-blog)
+router.put('/like/:id', asyncHandler(async (req, res) => {
+  res.json(await blogSchema.findByIdAndUpdate(req.params.id, { $inc: { likes: 1 } }, { new: true }));
+}));
+router.put('/view/:id', asyncHandler(async (req, res) => {
+  res.json(await blogSchema.findByIdAndUpdate(req.params.id, { $inc: { views: 1 } }, { new: true }));
+}));
+
 // Delete Blog
-router.route('/delete-blog/:id').delete((req, res, next) => {
-    blogSchema.findByIdAndRemove(req.params.id, (error, data) => {
-    if (error) {
-      return next(error);
-    } else {
-      res.status(200).json({
-        msg: data
-      })
-    }
-  })
-})
+router.delete('/delete-blog/:id', verifyToken, asyncHandler(async (req, res) => {
+  const blog = await findOwnBlog(req);
+  await blog.deleteOne();
+  res.status(200).json({ msg: blog });
+}));
 
-router.route('/test').get(async (req,res) => {  
-  let datas = [];
-  const { tag } = req.query;
-  request(`https://blogs.webmd.com/webmd-doctors/default.htm`,(err,response,html) => {
+router.get('/test', asyncHandler(async (req, res) => {
+  res.json(await webmd.doctorsBlogPosts());
+}));
 
-   if(response.statusCode === 200){
-      const $ = cheerio.load(html);
-      $('.posts-list-post-content').each((i,el) => {
-            console.log(el);
-          const link = $(el).find('a').attr('href');
-          const title = $(el).find('h3').text(); 
-          const desc = $(el).find('p').text(); 
-          const author = $(el).find('span').text(); 
-          let data = {
-              title,
-              link,
-              desc,
-              author
-          }      
-          datas.push(data);      
-      })  
-   } 
-  console.log(datas);   
-  res.json(datas);
+// Le texte est échappé : sinon une regex piégée peut bloquer la base (ReDoS).
+router.get('/search-blog/:text', asyncHandler(async (req, res) => {
+  const pattern = new RegExp(escapeRegex(req.params.text), 'i');
+  res.json(await blogSchema.find({ $or: [{ title: pattern }, { description: pattern }] }));
+}));
 
-  })
-})
+router.get('/filter-blog/:text', asyncHandler(async (req, res) => {
+  res.json(await blogSchema.find({ category: new RegExp(escapeRegex(req.params.text), 'i') }));
+}));
 
-router.route('/search-blog/:text').get((req, res, next) => {
-  blogSchema.find({
-    $or: [{
-      title: {
-        '$regex': req.params.text,
-      }
-    },
-    {
-      description: {
-        '$regex': req.params.text,
-      }
-    }]
-  }, function (error, data) {
-    if (error) {
-      return next(error)
-    } else {
-      res.json(data)
-    }
-  })
-});
+router.get('/categories', asyncHandler(async (req, res) => {
+  res.json(await blogSchema.distinct('category'));
+}));
 
-router.route('/filter-blog/:text').get((req, res, next) => {
-  blogSchema.find({
-    $or: [{
-      category: {
-        '$regex': req.params.text,
-      }
-    },
-    ]
-  }, function (error, data) {
-    if (error) {
-      return next(error)
-    } else {
-      res.json(data)
-    }
-  })
-});
-
-router.route('/categories').get((req, res, next) => {
-  blogSchema.distinct('category', function (error, data) {
-    if (error) {
-      return next(error)
-    } else {
-      res.json(data)
-    }
-  });
-});
-
-router.route('/search/:tag').get(async (req,res) => {  
-  let datas = [];
-  request(`https://www.webmd.com/search/search_results/default.aspx?query=${req.params.tag}`,(err,response,html) => {
-    
-   if(response.statusCode === 200){
-      const $ = cheerio.load(html);
-
-      $('.search-results-doc-container').each((i,el) => {
-          const link = $(el).find('a').attr('href');
-          const title = $(el).find('a').text();
-          let data = {
-                  link,
-                  title      
-          }      
-          datas.push(data);      
-      })  
-   } 
-  console.log(datas);   
-  res.json(datas);
-
-  })
-})
+router.get('/search/:tag', asyncHandler(async (req, res) => {
+  res.json(await webmd.searchArticles(req.params.tag));
+}));
 
 module.exports = router;

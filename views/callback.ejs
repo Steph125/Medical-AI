@@ -6,11 +6,12 @@
   </head>
   <body>
     <h1>Login Successful</h1>
-    <p>Profile: <%= profile.localizedFirstName %></p>
   </body>
   <script>
-    var profile = <%- JSON.stringify(profile)  %>
-    window.opener.postMessage({'type': 'profile', 'profile': profile}, '*')
+    // JSON échappé ("<" -> <) pour qu'une valeur ne puisse pas fermer la balise <script>.
+    var data = <%- JSON.stringify({ type: 'profile', profile: profile, auth: auth, state: state }).replace(/</g, '\\u003c') %>;
+    // Message envoyé uniquement à l'origine du front, jamais à '*'.
+    window.opener.postMessage(data, <%- JSON.stringify(targetOrigin).replace(/</g, '\\u003c') %>);
     window.close();
   </script>
 </html>

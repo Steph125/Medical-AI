@@ -21,9 +21,7 @@ const Speciality = Object.freeze({
 
 });
 
-const User = mongoose.model(
-  "User",
-  new mongoose.Schema({
+const UserSchema = new mongoose.Schema({
     username: String,
     firstname: String,
     lastname:String,
@@ -56,10 +54,6 @@ const User = mongoose.model(
       enum: ['Pending', 'Active', 'Inactive'],
       default: 'Pending'
     },
-    role: {
-      type: String, 
-      enum: ['doctor', 'patient', 'admin'],
-    },
     confirmationCode: { 
       type: String, 
       unique: true },
@@ -86,7 +80,18 @@ const User = mongoose.model(
       ref : "chatbotTalks"
     }]
 
-  })
-);
+});
+
+// Ne jamais renvoyer le hash du mot de passe ni le code de confirmation au client.
+UserSchema.set("toJSON", {
+  transform: (doc, ret) => {
+    delete ret.password;
+    delete ret.confirmationCode;
+    delete ret.__v;
+    return ret;
+  },
+});
+
+const User = mongoose.model("User", UserSchema);
 
 module.exports = User;

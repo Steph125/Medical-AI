@@ -1,90 +1,63 @@
 const jwt = require("jsonwebtoken");
 const config = require("../config/auth.config.js");
 const db = require("../models");
+const { HttpError, asyncHandler } = require("../utils/http");
+
 const User = db.user;
-const Role = db.role;
 
-verifyToken = (req, res, next) => {
-  let token = req.headers["x-access-token"];
-
+const verifyToken = asyncHandler(async (req, res, next) => {
+  const token = req.headers["x-access-token"];
   if (!token) {
-    return res.status(403).send({ message: "No token provided!" });
+    throw new HttpError(403, "No token provided!");
   }
 
-  jwt.verify(token, config.secret, (err, decoded) => {
-    if (err) {
-      return res.status(401).send({ message: "Unauthorized!" });
-    }
-    req.userId = decoded.id;
-    next();
-  });
+  let decoded;
+  try {
+    decoded = jwt.verify(String(token), config.secret);
+  } catch {
+    throw new HttpError(401, "Unauthorized!");
+  }
+  // Refuse les autres jetons signés avec le même secret (confirmation d'email, etc.).
+  if (!decoded.id || decoded.purpose) {
+    throw new HttpError(401, "Unauthorized!");
+  }
+
+  const user = await User.findById(decoded.id).populate("roles", "-__v");
+  if (!user) {
+    throw new HttpError(401, "Unauthorized!");
+  }
+  req.userId = user.id;
+  req.user = user;
+  next();
+});
+
+// Le projet stocke le rôle à deux endroits : `role` (patient/doctor/admin) et `roles`
+// (collection Role : user/moderator/admin). On tient compte des deux.
+const roleNames = (user) =>
+  new Set([user.role, ...(user.roles || []).map((role) => role.name)].filter(Boolean));
+
+const hasRole = (user, ...allowed) => {
+  const names = roleNames(user);
+  return allowed.some((role) => names.has(role));
 };
 
-isAdmin = (req, res, next) => {
-  User.findById(req.userId).exec((err, user) => {
-    if (err) {
-      res.status(500).send({ message: err });
-      return;
-    }
-
-    Role.find(
-      {
-        _id: { $in: user.roles }
-      },
-      (err, roles) => {
-        if (err) {
-          res.status(500).send({ message: err });
-          return;
-        }
-
-        for (let i = 0; i < roles.length; i++) {
-          if (roles[i].name === "admin") {
-            next();
-            return;
-          }
-        }
-
-        res.status(403).send({ message: "Require Admin Role!" });
-        return;
-      }
-    );
-  });
+const requireRole = (...allowed) => (req, res, next) => {
+  if (hasRole(req.user, ...allowed)) return next();
+  next(new HttpError(403, `Require ${allowed.join(" or ")} Role!`));
 };
 
-isModerator = (req, res, next) => {
-  User.findById(req.userId).exec((err, user) => {
-    if (err) {
-      res.status(500).send({ message: err });
-      return;
-    }
-
-    Role.find(
-      {
-        _id: { $in: user.roles }
-      },
-      (err, roles) => {
-        if (err) {
-          res.status(500).send({ message: err });
-          return;
-        }
-
-        for (let i = 0; i < roles.length; i++) {
-          if (roles[i].name === "moderator") {
-            next();
-            return;
-          }
-        }
-
-        res.status(403).send({ message: "Require Moderator Role!" });
-        return;
-      }
-    );
-  });
+// L'utilisateur ne peut agir que sur sa propre ressource (:id), sauf s'il a un des rôles listés.
+const isSelfOr = (...allowed) => (req, res, next) => {
+  if (req.params.id === req.userId || hasRole(req.user, ...allowed)) return next();
+  next(new HttpError(403, "Access denied"));
 };
 
-const authJwt = {
+module.exports = {
   verifyToken,
-  isAdmin,
-  isModerator
+  hasRole,
+  requireRole,
+  isSelfOr,
+  isAdmin: requireRole("admin"),
+  isModerator: requireRole("moderator"),
+  isDoctorOrAdmin: requireRole("doctor", "admin"),
 };
-module.exports = authJwt;

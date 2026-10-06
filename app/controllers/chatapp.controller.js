@@ -1,176 +1,149 @@
-const talkToChatbot = require('../Appointment_chatbot/chatbot');
+const geolib = require('geolib');
+const moment = require('moment');
+
+const { appointmentChatbot } = require('../services/dialogflow');
 const ChatTalks = require("../models/chatbotTalks");
 const UserModel = require("../models/user.model");
-const Location = require("../models/location");
-const getDistance = require('geolib/es/getDistance');
-const geolib = require('geolib');
-const {stringify} = require('flatted');
-//const GeoPoint = require('geopoint');
-const moment = require('moment');
-const Appointment = require ('../models/appointement');
+const Appointment = require('../models/appointement');
 const nodemailer = require("../config/nodemailer.config");
+const { HttpError, asyncHandler, escapeRegex } = require('../utils/http');
 
-var doc;
-var docname;
-var doclastname;
-var docphone;
+const APPOINTMENT_DURATION_MINUTES = 30;
 
-const send_message = async (req, res) => {
-  const message = req.body.message
-  var user = req.params.id
-  const messageSent = req.body.message
-  const userlatitude = req.body.Userlat
-  const userlongitude = req.body.Userlng
-  const Firstname = req.body.Username
-  const Email = req.body.Usermail
-  talkToChatbot(message)
-  .then((response) => {
-    res.send({ message: response })
-    var messageReceived = response.fulfillmentText
-    var date = new Date();
-    console.log(response)
-    if(response.intent.displayName === "Take_appointment_phase1"){
-      console.log("Phase1\n")
-      var nearestdoctor =null
-      var nearestdistance=999999999999
-      if(response.allRequiredParamsPresent){ 
-        console.log("Phase1\n")
-        //console.log(response.parameters.fields.Doctor_speciality.listValue.values.stringValue)
-        UserModel.find({speciality : response.queryText}).then((results) => {
-          const p = new Promise((resolve, reject)=>{
-            results.map((res) => {
-              Location.findById(res.location).then((result) => {
-                var distance = geolib.getDistance(
-                  {latitude: userlatitude, longitude: userlongitude},
-                  {latitude: result.lat, longitude: result.lng})
-                if(distance < nearestdistance) {
-                  resolve(
-                  nearestdoctor= res._id
-                  )
-                  nearestdistance= distance
-                }
-              });
-            })
-          })
-          p.then((result) => {
-            doc = nearestdoctor
-            if(nearestdoctor !== null) {
-              UserModel.findById(result).then((res)=>{
-                messageReceived="The nearest doctor to your location is "+res.firstname+" "+res.lastname+", please pick a date by the datepicker."
-                ChatTalks.create({messageSent ,messageReceived , date , user, nearestdoctor  });
-                docname = res.firstname;
-                doclastname = res.lastname;
-                docphone = res.phone;
-             })
-            }     
-          })
-            
-        }) 
-        .catch((err) => {
-          console.log(err);
-        });
-      }
-      else if (response.allRequiredParamsPresent === false){
-        ChatTalks.create({messageSent ,messageReceived , date , user, nearestdoctor  });
-      }
-    } else if(response.intent.displayName === "Take_appointment_phase2"){
-      console.log("Phase2\n")
-        var test = true;
-      if(doc == null){
-        messageReceived = "please choose a doctor before picking a date"
-        ChatTalks.create({messageSent ,messageReceived , date , user  });
-      }
-      if(doc !== null ){
-        
-          StartDate = req.body.Date
-          console.log("test date :"+ StartDate)
-          var User = doc
-          var test = true
-          const pr = new Promise((resolve, reject)=>{
-            resolve(
-           Appointment.find({User : doc }) )
-          })
-          pr.then((result) =>{
-            const prom = new Promise((resolve, reject)=>{
-            result.map((app) =>{
-                console.log(app)
-               var test1 = new Date(StartDate)
-               var test2 = new Date(app.StartDate)
-               console.log(test1 + "and" + test2)
-                if(test1.getTime() === test2.getTime())
-                  {test = false}
-                console.log("test"+test)
-    
-            } )
-          resolve(test)
-              })
-            prom.then((res) => {
-            if(res === true)
-            {
-            var EndDate = moment(StartDate).add(30, 'minutes');
-            messageReceived = "Appointment confirmed at  you will get email with all details, and you can always cancel your appointment."
-            //messageSent = messageSent + StartDate
-            Appointment.create({Firstname,Email, StartDate, EndDate , User,DoctorName: docname + " " +doclastname })
-            Appointment.create({Firstname,Email, StartDate, EndDate , User: user, DoctorName: docname + " " +doclastname })  
-            ChatTalks.create({messageSent ,messageReceived , date , user  });
-            nodemailer.sendAppointementMail(
-              docname,
-              doclastname,
-              StartDate,
-              docphone,
-              Email
-            );
-            }
-          else if (res === false) {
-            messageReceived = "Date unavailable please pick another date"
-            ChatTalks.create({messageSent ,messageReceived , date , user  });
-          }
-          })
-        })
-          
-      }
-    } else {
-      console.log("Default\n")
-      ChatTalks.create({messageSent ,messageReceived , date , user  });
-
-    }
-
-
-  })
-  .catch((error) => {
-    console.log('Something went wrong: ' + error)
-    res.send({
-     error: 'Error occured here',
-    })
-  })
+// Spécialité demandée : paramètre extrait par Dialogflow, sinon le texte brut.
+const getSpeciality = (response) => {
+  const field = response.parameters?.fields?.Doctor_speciality;
+  const value = field?.stringValue || field?.listValue?.values?.[0]?.stringValue || response.queryText;
+  return String(value || "").trim();
 };
-const get_messages = async (req, res) => {
-  const id = req.params.id;
-    try {
-      const talks = await ChatTalks.find({user : id});
-      res.status(200).send({msg: "talks", talks})
-    }catch(error){
-      console.log(error);
-      res.status(500).send(error);
-    }
-  };
 
-const delete_messages = async (req,res) => {
-  const id = req.params.id;
-  console.log(id)
-  ChatTalks.deleteMany({user : id }).then((result)  => {
-    res.json();
-    console.log("deleted");
-  })
-  .catch((err) => {
-    console.log(err);
-  })
-}
+// Parcourt tous les médecins de la spécialité et garde le plus proche.
+const findNearestDoctor = async (speciality, userLat, userLng) => {
+  const doctors = await UserModel.find({
+    speciality: new RegExp(`^${escapeRegex(speciality)}$`, "i"),
+    location: { $ne: null },
+  }).populate("location");
+
+  let nearest = null;
+  let nearestDistance = Infinity;
+  for (const doctor of doctors) {
+    if (!doctor.location) continue;
+    const distance = geolib.getDistance(
+      { latitude: userLat, longitude: userLng },
+      { latitude: Number(doctor.location.lat), longitude: Number(doctor.location.lng) }
+    );
+    if (distance < nearestDistance) {
+      nearest = doctor;
+      nearestDistance = distance;
+    }
+  }
+  return nearest;
+};
+
+const chooseDoctor = async (response, body) => {
+  const lat = Number(body.Userlat);
+  const lng = Number(body.Userlng);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+    return { messageReceived: "Please enable location access so we can find the nearest doctor." };
+  }
+  const doctor = await findNearestDoctor(getSpeciality(response), lat, lng);
+  if (!doctor) {
+    return { messageReceived: "Sorry, no doctor with this speciality was found." };
+  }
+  return {
+    nearestdoctor: doctor.id,
+    messageReceived: `The nearest doctor to your location is ${doctor.firstname} ${doctor.lastname}, please pick a date by the datepicker.`,
+  };
+};
+
+const bookAppointment = async (patient, requestedDate) => {
+  // Le médecin choisi est relu dans l'historique de CET utilisateur
+  // (auparavant il était stocké dans une variable partagée par tous les utilisateurs).
+  const lastChoice = await ChatTalks.findOne({ user: patient._id, nearestdoctor: { $ne: null } }).sort({ date: -1 });
+  const doctor = lastChoice && await UserModel.findById(lastChoice.nearestdoctor);
+  if (!doctor) {
+    return "please choose a doctor before picking a date";
+  }
+
+  const StartDate = new Date(requestedDate);
+  if (Number.isNaN(StartDate.getTime())) {
+    return "Please pick a valid date with the datepicker.";
+  }
+  if (StartDate < new Date()) {
+    return "Please pick a date in the future.";
+  }
+  const EndDate = moment(StartDate).add(APPOINTMENT_DURATION_MINUTES, 'minutes').toDate();
+
+  // Créneau indisponible s'il chevauche un rendez-vous existant du médecin.
+  const conflict = await Appointment.exists({
+    User: doctor._id,
+    StartDate: { $lt: EndDate },
+    EndDate: { $gt: StartDate },
+  });
+  if (conflict) {
+    return "Date unavailable please pick another date";
+  }
+
+  const details = {
+    Firstname: patient.firstname,
+    Lastname: patient.lastname,
+    Email: patient.email,
+    Phone: patient.phone,
+    StartDate,
+    EndDate,
+    DoctorName: `${doctor.firstname} ${doctor.lastname}`,
+    Doctor: doctor._id,
+    Patient: patient._id,
+  };
+  // Une copie pour le médecin, une pour le patient (format attendu par le front).
+  await Appointment.insertMany([
+    { ...details, User: doctor._id },
+    { ...details, User: patient._id },
+  ]);
+  nodemailer.sendAppointementMail(doctor.firstname, doctor.lastname, StartDate, doctor.phone, patient.email);
+  return `Appointment confirmed on ${StartDate.toUTCString()}, you will get an email with all details, and you can always cancel your appointment.`;
+};
+
+const send_message = asyncHandler(async (req, res) => {
+  const user = req.params.id;
+  const messageSent = String(req.body.message || "");
+  if (!messageSent) {
+    throw new HttpError(400, "message is required");
+  }
+
+  let response;
+  try {
+    response = await appointmentChatbot(user, messageSent);
+  } catch (error) {
+    console.error('Dialogflow error:', error.message);
+    return res.status(502).send({ error: 'Error occured here' });
+  }
+
+  const talk = { messageSent, messageReceived: response.fulfillmentText, date: new Date(), user };
+  const intent = response.intent?.displayName;
+
+  if (intent === "Take_appointment_phase1" && response.allRequiredParamsPresent) {
+    Object.assign(talk, await chooseDoctor(response, req.body));
+  } else if (intent === "Take_appointment_phase2") {
+    talk.messageReceived = await bookAppointment(req.user, req.body.Date);
+  }
+
+  await ChatTalks.create(talk);
+  res.send({ message: response, reply: talk.messageReceived });
+});
+
+const get_messages = asyncHandler(async (req, res) => {
+  const talks = await ChatTalks.find({ user: req.params.id }).sort({ date: 1 });
+  res.status(200).send({ msg: "talks", talks });
+});
+
+const delete_messages = asyncHandler(async (req, res) => {
+  await ChatTalks.deleteMany({ user: req.params.id });
+  res.json();
+});
 
 module.exports = {
-    
     send_message,
     get_messages,
     delete_messages
-  };
-  
+};

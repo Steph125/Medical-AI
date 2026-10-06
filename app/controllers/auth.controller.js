@@ -1,258 +1,86 @@
+const jwt = require("jsonwebtoken");
+const bcrypt = require("bcryptjs");
+
 const config = require("../config/auth.config");
 const nodemailer = require("../config/nodemailer.config");
-
 const db = require("../models");
+const { HttpError, asyncHandler } = require("../utils/http");
+const { buildAuthResponse, signResetToken, verifyResetToken } = require("../utils/auth");
+
 const User = db.user;
 const Role = db.role;
 
-var jwt = require("jsonwebtoken");
-var bcrypt = require("bcryptjs");
+// Rôles qu'un visiteur peut choisir à l'inscription (jamais "admin").
+const SIGNUP_ROLES = ["patient", "doctor"];
 
-exports.signup = (req, res) => {
-  const token = jwt.sign({ email: req.body.email }, config.secret);
+exports.signup = asyncHandler(async (req, res) => {
+  const { firstname, lastname, phone, birthdate } = req.body;
+  const username = String(req.body.username);
+  const email = String(req.body.email);
 
-  const user = new User({
-    username: req.body.username,
-    firstname: req.body.firstname,
-    lastname :req.body.lastname,
-    phone : req.body.phone,
-    birthdate : req.body.birthdate,
-    email: req.body.email,
-    role: req.body.role,
-    password: bcrypt.hashSync(req.body.password, 8),
-    confirmationCode: token,
+  const userRole = await Role.findOne({ name: "user" });
+  const user = await User.create({
+    username,
+    firstname,
+    lastname,
+    phone,
+    birthdate,
+    email,
+    role: SIGNUP_ROLES.includes(req.body.role) ? req.body.role : "patient",
+    password: bcrypt.hashSync(String(req.body.password), 8),
+    confirmationCode: jwt.sign({ email, purpose: "confirm" }, config.secret),
+    roles: userRole ? [userRole._id] : [],
   });
 
-  user.save((err, user) => {
-    if (err) {
-      res.status(500).send({ message: err });
-      return;
-    }
+  res.send({ message: "User was registered successfully! Please check your email" });
+  nodemailer.sendConfirmationEmail(user.username, user.email, user.confirmationCode);
+});
 
-    if (req.body.roles) {
-      Role.find(
-        {
-          name: { $in: req.body.roles },
-        },
-        (err, roles) => {
-          if (err) {
-            res.status(500).send({ message: err });
-            return;
-          }
+exports.signin = asyncHandler(async (req, res) => {
+  const user = await User.findOne({ username: String(req.body.username) }).populate("roles", "-__v");
 
-          user.roles = roles.map((role) => role._id);
-          user.save((err) => {
-            if (err) {
-              res.status(500).send({ message: err });
-              return;
-            }
+  // Même message si l'utilisateur n'existe pas ou si le mot de passe est faux :
+  // on ne révèle pas quels comptes existent.
+  if (!user || !bcrypt.compareSync(String(req.body.password), user.password)) {
+    return res.status(401).send({ accessToken: null, message: "Invalid username or password!" });
+  }
 
-            res.send({
-              message:
-                "User was registered successfully! Please check your email",
-            });
-            nodemailer.sendConfirmationEmail(
-              user.username,
-              user.email,
-              user.confirmationCode
-            );
-            res.redirect("/");
-          });
-        }
-      );
-    } else {
-      Role.findOne({ name: "user" }, (err, role) => {
-        if (err) {
-          res.status(500).send({ message: err });
-          return;
-        }
+  if (user.status != "Active") {
+    return res.status(401).send({ message: "Pending Account. Please Verify Your Email!" });
+  }
 
-        user.roles = [role._id];
-        user.save((err) => {
-          if (err) {
-            res.status(500).send({ message: err });
-            return;
-          }
-          res.send({
-            message:
-              "User was registered successfully! Please check your email",
-          });
+  res.status(200).send(buildAuthResponse(user));
+});
 
-          nodemailer.sendConfirmationEmail(
-            user.username,
-            user.email,
-            user.confirmationCode
-          );
-        });
-      });
-    }
-  });
-};
+exports.verifyUser = asyncHandler(async (req, res) => {
+  const user = await User.findOne({ confirmationCode: String(req.params.confirmationCode) });
+  if (!user) {
+    throw new HttpError(404, "User Not found.");
+  }
+  user.status = "Active";
+  await user.save();
+  res.send({ message: "Account verified successfully!" });
+});
 
-exports.signin = (req, res) => {
-  User.findOne({
-    username: req.body.username,
-  })
-    .populate("roles", "-__v")
-    .exec((err, user) => {
-      if (err) {
-        res.status(500).send({ message: err });
-        return;
-      }
+exports.resetPassword = asyncHandler(async (req, res) => {
+  const user = await User.findOne({ email: String(req.body.email) });
+  if (user) {
+    nodemailer.sendResetPasswordEmail(user.username, user.email, signResetToken(user));
+  }
+  // Réponse identique que l'email existe ou non.
+  res.status(200).send({ message: "If this email exists, a mail was sent! Please check your email" });
+});
 
-      if (!user) {
-        return res.status(404).send({ message: "User Not found." });
-      }
-
-      var passwordIsValid = bcrypt.compareSync(
-        req.body.password,
-        user.password
-      );
-
-      if (!passwordIsValid) {
-        return res.status(401).send({
-          accessToken: null,
-          message: "Invalid Password!",
-        });
-      }
-
-      if (user.status != "Active") {
-        return res.status(401).send({
-          message: "Pending Account. Please Verify Your Email!",
-        });
-      }
-
-      var token = jwt.sign({ id: user.id }, config.secret, {
-        expiresIn: 86400, // 24 hours
-      });
-
-      var authorities = [];
-
-      for (let i = 0; i < user.roles.length; i++) {
-        authorities.push("ROLE_" + user.roles[i].name.toUpperCase());
-      }
-      res.status(200).send({
-        id: user._id,
-        role: user.role,
-        username: user.username,
-        email: user.email,
-        roles: authorities,
-        accessToken: token,
-        status: user.status,
-      });
-    });
-};
-
-exports.signinlinkedin = (req, res) => {
-  User.findOne({
-    email: req.body.email,
-  })
-    .populate("roles", "-__v")
-    .exec((err, user) => {
-      if (err) {
-        res.status(500).send({ message: err });
-        return;
-      }
-
-      if (!user) {
-        return res.status(404).send({ message: "User Not found." });
-      }
-
-      var token = jwt.sign({ id: user.id }, config.secret, {
-        expiresIn: 86400, // 24 hours
-      });
-
-      var authorities = [];
-
-      for (let i = 0; i < user.roles.length; i++) {
-        authorities.push("ROLE_" + user.roles[i].name.toUpperCase());
-      }
-      res.status(200).send({
-        id: user._id,
-        username: user.username,
-        email: user.email,
-        roles: authorities,
-        role: user.role,
-        accessToken: token,
-        status: user.status,
-      });
-    });
-};
-
-exports.signinface = (req, res) => {
-  User.findOne({
-    username: req.body.username,
-  })
-    .populate("roles", "-__v")
-    .exec((err, user) => {
-      if (err) {
-        res.status(500).send({ message: err });
-        return;
-      }
-
-      if (!user) {
-        return res.status(404).send({ message: "User Not found." });
-      }
-
-      var token = jwt.sign({ id: user.id }, config.secret, {
-        expiresIn: 86400, // 24 hours
-      });
-
-      var authorities = [];
-
-      for (let i = 0; i < user.roles.length; i++) {
-        authorities.push("ROLE_" + user.roles[i].name.toUpperCase());
-      }
-      res.status(200).send({
-        id: user._id,
-        username: user.username,
-        email: user.email,
-        role : user.role,
-        roles: authorities,
-        accessToken: token,
-        status: user.status,
-      });
-    });
-};
-
-exports.verifyUser = (req, res, next) => {
-  User.findOne({
-    confirmationCode: req.params.confirmationCode,
-  })
-    .then((user) => {
-      console.log(user);
-      if (!user) {
-        return res.status(404).send({ message: "User Not found." });
-      }
-      user.status = "Active";
-      user.save((err) => {
-        if (err) {
-          res.status(500).send({ message: err });
-          return;
-        }
-      });
-    })
-    .catch((e) => console.log("error", e));
-};
-
-exports.resetPassword = (req, res, next) => {
-  User.findOne({
-    email: req.body.email,
-  })
-    .then((user) => {
-      console.log(user);
-      if (!user) {
-        return res.status(404).send({ message: "Email Not found." });
-      }
-      res.status(200).send({
-        message:
-        "A mail was sent! Please check your email",
-      });
-      nodemailer.sendResetPasswordEmail(
-        user.username,
-        user.email,
-        user.confirmationCode
-      );
-
-    });
-};
+exports.confirmResetPassword = asyncHandler(async (req, res) => {
+  const { token, password } = req.body;
+  if (!password || String(password).length < 8) {
+    throw new HttpError(400, "Password must contain at least 8 characters!");
+  }
+  const user = await verifyResetToken(User, token);
+  if (!user) {
+    throw new HttpError(400, "Invalid or expired reset link.");
+  }
+  user.password = bcrypt.hashSync(String(password), 8);
+  await user.save();
+  res.send({ message: "Password updated successfully!" });
+});
